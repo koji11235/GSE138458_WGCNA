@@ -1,0 +1,326 @@
+---
+title: "Relating module to trait"
+author: "koji shiota"
+date: "2020/7/11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("~/Script")
+```
+
+```{r}
+library(tidyverse)
+library(WGCNA)
+library(clusterProfiler)
+library(ReactomePA)
+library(org.Hs.eg.db)
+```
+
+
+
+```{r}
+lnames = load("../Output/001_NormalizeRawData/SLE_GSE138458-01-dataInput.RData")
+print(lnames)
+```
+
+
+```{r}
+datTraits <- datTraits %>% 
+  # filter(description %in% rownames(datExpr)) %>% 
+  dplyr::select(-c(ID_REF, case_control, sledai_group))
+
+gene_annotation <- read_tsv("../Data/GPL10558-50081.txt", comment = "#", col_names = TRUE)
+```
+
+
+```{r}
+constructedNetwork_paths <- list.files(path = "../Output/002_NetworkConstruction", pattern = "SLE_GSE138458-02-networkConstruction_.*.RData", full.names = TRUE)
+constructedNetwork_paths#[[1]]
+```
+
+
+```{r}
+constructedNetwork = "../Output/002_NetworkConstruction/SLE_GSE138458-02-networkConstruction_unsigned_4.RData"
+#for (constructedNetwork in constructedNetwork_paths){
+condition = basename(constructedNetwork) %>% str_extract(pattern = "(un)?signed_[0-9](_merged)?")
+print(condition)
+output_dir = paste0("../Output/003_RelatingModuleToTrait/", condition, "/")
+if (!dir.exists(output_dir)){
+  dir.create(output_dir)}
+lnames = load(file = constructedNetwork)
+print(lnames)
+```
+
+
+```{r}
+## 3.a Quantifying module–trait associations
+# Define numbers of genes and samples
+nGenes = ncol(datExpr);
+nSamples = nrow(datExpr);
+# Recalculate MEs with color labels
+MEs0 = moduleEigengenes(datExpr, moduleColors)$eigengenes
+MEs = orderMEs(MEs0)
+```
+
+
+
+#####################################################
+
+reference
+# III. Using simulated data to evaluate different module detection methods and gene screening approaches
+
+## 6. Relating modules and module eigengenes to external data
+
+### 6.a Representing modules by eigengenes and relating eigengenes to one another
+### To get a sense of how related the modules are one can summarize each module by its eigengene (first principal component).
+```{r}
+signif(cor(MEs, use="p"), 2)
+```
+
+```{r}
+dissimME=(1-t(cor(MEs, method="p")))/2
+hclustdatME=hclust(as.dist(dissimME), method="average" )
+# Plot the eigengene dendrogram
+par(mfrow=c(1,1))
+plot(hclustdatME, main="Clustering tree based of the module eigengenes")
+```
+
+
+## 6.a.1 Pairwise scatter plots of the samples (arrays) along the module eigengenes
+モジュールが多すぎるのでplotMEpairsではよく見えない
+```{r}
+#sizeGrWindow(8,9)
+plotMEpairs(MEs,y=datTraits$case_control_levels)
+```
+
+## 6.c Diagnostics: heatmap plots of module expression
+```{r}
+sizeGrWindow(8,9)
+par(mfrow=c(3,1), mar=c(1, 2, 4, 1))
+which.module="green"
+plotMat(t(scale(datExpr[,moduleColors==which.module ]) ),
+        nrgcols=30,rlabels=T,
+        clabels=T,rcols=which.module,
+        title=which.module )
+
+which.module="red"
+plotMat(t(scale(datExpr[,moduleColors==which.module ]) ),
+        nrgcols=30,rlabels=T,
+        clabels=T,rcols=which.module,
+        title=which.module )
+```
+
+
+## 6.d Diagnostics: displaying module heatmap and the eigengene
+```{r}
+sizeGrWindow(8,7);
+which.module="red"
+ME=MEs[, paste("ME",which.module, sep="")]
+par(mfrow=c(2,1), mar=c(0.3, 5.5, 3, 2))
+plotMat(t(scale(datExpr[,moduleColors==which.module ]) ),
+        nrgcols=30,rlabels=F,rcols=which.module,
+        main=which.module, cex.main=2)
+par(mar=c(5, 4.2, 0, 0.7))
+barplot(ME, col=which.module, main="", cex.main=2,
+ylab="eigengene expression",xlab="array sample")
+```
+
+
+
+
+
+
+
+
+#####################################################
+
+
+```{r}
+moduleTraitCor = cor(MEs, datTraits, use = "p")
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples)
+```
+
+
+```{r}
+sizeGrWindow(10,6)
+# Will display correlations and their p-values
+textMatrix = paste(signif(moduleTraitCor, 2), "\n(",
+                   signif(moduleTraitPvalue, 1), ")", sep = "");
+dim(textMatrix) = dim(moduleTraitCor)
+par(mar = c(6, 8.5, 3, 3));
+# Display the correlation values within a heatmap plot
+#png(file = paste0(output_dir,"Module-trait_relationships.png"), width = 720, height = 480)
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = names(datTraits),
+               yLabels = names(MEs),
+               ySymbols = names(MEs),
+               colorLabels = FALSE,
+               colors = blueWhiteRed(50),
+               textMatrix = textMatrix,
+               setStdMargins = FALSE,
+               cex.text = 0.5,
+               zlim = c(-1,1),
+               main = paste("Module-trait relationships"))
+#dev.off()
+
+```
+
+```{r}
+GS1=as.numeric(cor(datTraits$sledai_group_levels,datExpr, use="p"))
+GeneSignificance=abs(GS1)
+# Next module significance is defined as average gene significance.
+ModuleSignificance=tapply(GeneSignificance, moduleColors, mean, na.rm=T)
+ModuleSignificance
+```
+
+```{r}
+sizeGrWindow(8,7)
+par(mfrow = c(1,1))
+plotModuleSignificance(GeneSignificance,moduleColors)
+```
+
+
+
+
+
+
+
+
+
+
+
+# ここからはパスウェイ解析とかになるから上までのModuleとTraitの相関解析とは毛色が若干異なる
+# → 次のスクリプトに回したほうが良さげ？
+```{r}
+pvalue_threshold = 0.05
+
+sum(moduleTraitPvalue[,"case_control_levels"] < pvalue_threshold)
+significant_module <- moduleTraitPvalue[moduleTraitPvalue[,"case_control_levels"] < pvalue_threshold,] %>% 
+  rownames() %>% 
+  str_sub(start = 3)
+
+gene_info <- tibble(
+  probeID = colnames(datExpr),
+  module = moduleColors
+) %>% 
+  left_join(gene_annotation %>% dplyr::select(c(ID, Entrez_Gene_ID, Symbol, Synonyms)), by = c("probeID" = "ID"))
+
+
+# Enrichment 
+
+groupby_enrichment <- gene_info %>% 
+  group_by(module) %>% 
+  nest() %>% 
+  filter(module != "grey", module %in% significant_module) %>% 
+  #head(2) %>% 
+  mutate(GOenrich = map(data, .f = function(data){enrichGO(data$Entrez_Gene_ID, OrgDb = org.Hs.eg.db, ont = "ALL", readable = TRUE)})#,
+         #GOenrich_readable = map(data, .f = function(data){enrichGO(data$Entrez_Gene_ID, OrgDb = org.Hs.eg.db, ont = "ALL", readable = TRUE)})
+  )
+
+map2(groupby_enrichment$GOenrich , groupby_enrichment$module,
+     .f = function(GOenrich, module){
+       bar = barplot(GOenrich)
+       ggsave(filename = paste0(output_dir, module,"_barplot",".pdf"), plot = bar,
+              width = 300,height = 200,units = "mm")
+       GOenrich@result %>% 
+         write_csv(paste0(output_dir, module,"_result",".csv"))
+     }
+)
+#}
+```
+
+
+
+
+
+
+
+
+
+```{r}
+constructedNetwork_paths <- list.files(path = "../Output/002_NetworkConstruction",
+                                       pattern = "SLE_GSE138458-02-networkConstruction_.*.RData", full.names = TRUE)
+
+for (constructedNetwork in constructedNetwork_paths){
+  condition = basename(constructedNetwork) %>% str_extract(pattern = "(un)?signed_[0-9](_merged)?")
+  print(condition)
+  output_dir = paste0("../Output/003_RelatingModuleToTrait//", condition, "/")
+  if (!dir.exists(output_dir)){
+    dir.create(output_dir)}
+  lnames = load(file = constructedNetwork)
+  print(lnames)
+  
+  
+  
+  ## 3.a Quantifying module–trait associations
+  # Define numbers of genes and samples
+  nGenes = ncol(datExpr);
+  nSamples = nrow(datExpr);
+  # Recalculate MEs with color labels
+  MEs0 = moduleEigengenes(datExpr, moduleColors)$eigengenes
+  MEs = orderMEs(MEs0)
+  moduleTraitCor = cor(MEs, datTraits, use = "p");
+  moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+  
+  sizeGrWindow(10,6)
+  # Will display correlations and their p-values
+  textMatrix = paste(signif(moduleTraitCor, 2), "\n(",
+                     signif(moduleTraitPvalue, 1), ")", sep = "");
+  dim(textMatrix) = dim(moduleTraitCor)
+  par(mar = c(6, 8.5, 3, 3));
+  # Display the correlation values within a heatmap plot
+  png(file = paste0(output_dir,"Module-trait_relationships.png"), width = 720, height = 480)
+  labeledHeatmap(Matrix = moduleTraitCor,
+                 xLabels = names(datTraits),
+                 yLabels = names(MEs),
+                 ySymbols = names(MEs),
+                 colorLabels = FALSE,
+                 colors = blueWhiteRed(50),
+                 textMatrix = textMatrix,
+                 setStdMargins = FALSE,
+                 cex.text = 0.5,
+                 zlim = c(-1,1),
+                 main = paste("Module-trait relationships"))
+  dev.off()
+  
+  pvalue_threshold = 0.05
+  
+  sum(moduleTraitPvalue[,"case_control_levels"] < pvalue_threshold)
+  significant_module <- moduleTraitPvalue[moduleTraitPvalue[,"case_control_levels"] < pvalue_threshold,] %>% 
+    rownames() %>% 
+    str_sub(start = 3)
+  
+  gene_info <- tibble(
+    probeID = colnames(datExpr),
+    module = moduleColors
+  ) %>% 
+    left_join(gene_annotation %>% dplyr::select(c(ID, Entrez_Gene_ID, Symbol, Synonyms)), by = c("probeID" = "ID"))
+  
+  
+  # Enrichment 
+  
+  groupby_enrichment <- gene_info %>% 
+    group_by(module) %>% 
+    nest() %>% 
+    filter(module != "grey", module %in% significant_module) %>% 
+    #head(2) %>% 
+    mutate(GOenrich = map(data, .f = function(data){enrichGO(data$Entrez_Gene_ID, OrgDb = org.Hs.eg.db, ont = "ALL", readable = TRUE)})#,
+           #GOenrich_readable = map(data, .f = function(data){enrichGO(data$Entrez_Gene_ID, OrgDb = org.Hs.eg.db, ont = "ALL", readable = TRUE)})
+    )
+  
+  map2(groupby_enrichment$GOenrich , groupby_enrichment$module,
+       .f = function(GOenrich, module){
+         bar = barplot(GOenrich)
+         ggsave(filename = paste0(output_dir, module,"_barplot",".pdf"), plot = bar,
+                width = 300,height = 200,units = "mm")
+         GOenrich@result %>% 
+           write_csv(paste0(output_dir, module,"_result",".csv"))
+       }
+  )
+}
+```
+
+
+

@@ -1,0 +1,319 @@
+---
+title: "001_Normalize_rawdata"
+author: "koji shiota"
+date: "2020/6/19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+setwd("~/Script")
+```
+
+
+```{r include=TRUE}
+library(limma)
+library(gplots)
+library(tidyverse, warn.conflicts=F, quietly=T)
+library(WGCNA)
+library(GEOquery)
+
+```
+
+## データ取得
+
+GEOの[GSE138458](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE138458)から正規化前のデータを取得します。 
+GSE138458_non-normalized.txt.gz　をダウンロードして適当なディレクトリの中で解凍してください。
+私の場合はDataディレクトリの中で解凍しました。
+
+## データ読み込み
+limmaのread.ilmn()関数で正規化前データを読み込みます。  
+
+```{r echo=T, results='hide'}
+read_tsv("../Data/GSE138458_non-normalized.txt")%>% 
+  rename_at(vars(starts_with("200")), function(x){paste0("SAMPLE",x)}) %>% 
+  write_tsv("../Data/GSE138458_non-normalized_renamed.txt")
+
+data <- read.ilmn("../Data/GSE138458_non-normalized_renamed.txt", sep = "\t", 
+                  probeid ="ID_REF", expr = "SAMPLE",other.columns="Detection")
+```
+
+<br>
+SLEスコアなどのメタデータもダウンロードして少し加工してTraitsとして保存しましょう
+<br>
+
+```{r}
+gse <- getGEO("GSE138458", destdir = getwd())
+phenoData <- pData(gse[[1]])
+
+sledai_group_map <- c(0, 1, 2)
+names(sledai_group_map) <- c("no val", "Low", "High")
+case_control_map <- c(0, 1)
+names(case_control_map) <- c("Control", "SLE Case")
+
+Traits <- phenoData %>% 
+  rownames_to_column("ID_REF") %>% 
+  dplyr::select("ID_REF", "description", "case/control:ch1", "sledai group:ch1") %>% 
+  dplyr::rename(case_control="case/control:ch1",
+                sledai_group="sledai group:ch1") %>% 
+  mutate(sledai_group_levels=sledai_group_map[sledai_group],
+         case_control_levels=case_control_map[case_control])
+  
+
+Traits %>% 
+  write_csv("../Data/Traits.csv")
+```
+
+
+
+
+```{r}
+data$E[1:5,1:5]
+```
+
+
+
+
+
+#################################################################
+## reference: WGCNA Tutorial simulated 03 
+
+```{r}
+meanExpressionByArray=apply( data$E, 2, mean, na.rm=T)  
+sizeGrWindow(9, 5)
+barplot(meanExpressionByArray,
+        xlab = "Sample", ylab = "Mean expression",
+        main ="Mean expression across samples",
+        names.arg = c(1:dim(data$E)[[2]]), cex.names = 0.7)
+```
+
+#################################################################
+
+
+
+
+<br>
+ボックスプロットも一部だけ描画してみます
+<br>
+
+```{r}
+boxplot(log2(data$E[,1:10]))
+```
+
+
+一部、ボックスプロットの形が他と異なるサンプルがあるみたいですね。一応全部のサンプルのボックスプロットを書いてみて全体の傾向を確認してみます。
+```{r}
+pdf(file = "../Output/boxplot_rawdata.pdf")
+for (i in 1:(length(colnames(data$E)) %/% 50 + 1)){
+  start = 50 * (i - 1) + 1 
+  end = 50 * i
+  if (end > length(colnames(data$E))){
+    end = length(colnames(data$E))
+  }
+  boxplot(log2(data$E[,start:end]))
+}
+dev.off()
+```
+
+## データ前処理
+[limma User Guide](https://www.bioconductor.org/packages/devel/bioc/vignettes/limma/inst/doc/usersguide.pdf)
+17.3 Comparing Mammary Progenitor Cell Populations with Illumina BeadChips参照
+
+#＃正規化
+
+```{r}
+datExpr0 <- neqc(data)
+```
+
+```{r}
+head(datExpr0$E[,1:5])
+```
+
+
+```{r}
+boxplot(datExpr0$E[,1:5])
+```
+```{r}
+save(datExpr0, file = "../Output/001_NormalizeRawData/normalized_data.Rdata")
+```
+
+```{r}
+load("../Output/001_NormalizeRawData/normalized_data.Rdata")
+```
+
+## サンプルのフィルタリング
+
+```{r}
+n_sample = dim(datExpr0$E)[2]
+n_sample
+```
+
+```{r}
+expressed <- rowSums(datExpr0$other$Detection < 0.05) >= (n_sample/4)
+datExpr<- datExpr0[expressed,]
+dim(datExpr$E)
+```
+
+```{r}
+plotMDS(datExpr)
+```
+
+
+## サンプルのフィルタリング　階層的クラスタリングによる
+Tutorial for the WGCNA package for R:
+I. Network analysis of liver expression data in female mice
+1. Data input and cleaning
+https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/Rpackages/WGCNA/Tutorials/FemaleLiver-01-dataInput.pdf　参照
+
+```{r}
+t(datExpr$E)[1:5,1:5]
+```
+
+```{r}
+sampleTree = hclust(dist(t(datExpr$E)), method = "average")
+save(sampleTree, file = "../Output/001_NormalizeRawData/sampleTree.Rdata")
+```
+
+
+################################
+```{r}
+dend <- as.dendrogram(sampleTree)
+```
+
+```{r}
+dend_data <- dendro_data(dend, type = "rectangle")
+names(dend_data)
+```
+
+```{r}
+sledai_group_tmp <- tibble(array_ID=labels(dend)) %>% 
+    left_join(Traits, by=c("array_ID"="description") )
+
+sledai_group = sledai_group_tmp$sledai_group
+names(sledai_group) = sledai_group_tmp$array_ID
+sledai_color_palette = c("#E34A33", "#FDBB84", "grey")
+
+sledai_color = sledai_color_palette[unclass(as.factor(sledai_group))]
+```
+
+```{r}
+cutHeight = 140
+clust = cutreeStatic(sampleTree, cutHeight = cutHeight, minSize = 1)
+names(clust) = sampleTree$labels
+clust = clust[labels(dend)]
+table(clust)
+```
+
+
+
+```{r}
+cluster_color_palette = brewer.pal(length(table(clust)), "Set3")
+cluster_color = cluster_color_palette[clust]
+names(cluster_color) = names(clust)
+```
+
+
+
+```{r}
+dend <- dend %>% 
+  set("labels_col", cluster_color) %>% # change color
+  set("labels_cex", 0) %>% 
+  set("by_labels_branches_col", names(clust[clust == 1]),TF_values = cluster_color_palette[1])
+plot(dend, ylim = c(-250, 320))
+abline(h = cutHeight, col = "red")
+colored_bars(dend = dend, 
+             colors = data.frame(sledai=sledai_color, cluster=cluster_color),
+             rowLabels = c("sledai", "cluster"),
+             sort_by_labels_order = FALSE,
+             y_shift=-300, y_scale = 100)
+```
+
+################################
+
+
+```{r}
+# clust 1 contains the samples we want to keep.
+keepSamples = (clust[colnames(datExpr)]==1)
+notKeptSamples = colnames(datExpr)[!keepSamples]
+```
+
+
+```{r}
+datExpr = datExpr[,keepSamples]
+nGenes = ncol(datExpr$E)
+nSamples = nrow(datExpr$E)
+```
+GSE138458_series_matrix.txt中の記載によると以下の６サンプルを外れ値として解析対象から除外したそうです
+<br>
+"6 samples were determined to be outliers and were dropped prior to normalization: 200319680117_E 200308380073_J 200308380073_K 200308380073_L 200308380104_E 200667730029_E"
+<br>
+今回行った基準で外れ値とされたサンプルを確認してみましょう。
+```{r}
+notKeptSamples
+```
+論文の筆者らによって外れ値とされたものはすべて含まれていることが確認できます。
+このことからある程度信頼できる基準で外れ値を判定できたと考えてもいいと思われます。
+
+```{r}
+dim(datExpr$E)
+```
+
+
+## 遺伝子のフィルタリング
+
+```{r}
+# filtering by mad 
+
+dim(datExpr$E)
+gene_mad = apply(datExpr$E, MARGIN = 1, FUN = mad)
+hist(gene_mad)
+```
+
+```{r}
+gene_mad_rank = rank(-gene_mad, ties.method = "first")
+keep = gene_mad_rank < 3000
+hist(gene_mad[keep])
+```
+
+```{r}
+datExpr <- datExpr[keep,]
+dim(datExpr)
+```
+
+```{r}
+gsg = goodSamplesGenes(datExpr$E,verbose = 3)
+gsg$allOK
+```
+
+
+
+
+```{r}
+datTraits0 <- Traits %>% 
+  column_to_rownames("description")
+datTraits <- datTraits0[rownames(datExpr),]
+```
+
+
+
+
+## WGCNAの関数群は行にサンプル、列に遺伝子のマトリクスを引数にするためdatExprを転置して保存します
+```{r}
+datExpr <- t(datExpr$E)
+datTraits0 <- Traits %>% 
+  column_to_rownames("description")
+datTraits <- datTraits0[rownames(datExpr),]
+save(datExpr, datTraits, file = "../Output/001_NormalizeRawData/SLE_GSE138458-01-dataInput.RData")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
